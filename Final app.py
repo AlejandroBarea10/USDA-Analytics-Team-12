@@ -21,16 +21,19 @@ st.set_page_config(page_title="USDA Digital Intelligence Platform", page_icon="�
 st.markdown("""
 <style>
   [data-testid="stMetricValue"]{font-size:2rem;font-weight:700}
-  .kpi-card{background:rgba(46,125,50,.1);border-radius:16px;padding:22px;margin:8px;
-    border:1px solid rgba(46,125,50,.2);box-shadow:0 8px 32px rgba(0,0,0,.05);color:#1b5e20;transition:.3s}
-  .kpi-card:hover{background:rgba(46,125,50,.15);transform:translateY(-3px)}
+  .kpi-card{background:rgba(46,125,50,.08);border-radius:16px;padding:22px;margin:8px;
+    border:1px solid rgba(46,125,50,.18);box-shadow:0 4px 16px rgba(0,0,0,.04);color:#1b5e20;transition:.3s}
+  .kpi-card:hover{background:rgba(46,125,50,.13);transform:translateY(-2px)}
   .insight-box{background:#f0f7f0;border-left:5px solid #2e7d32;padding:14px 18px;border-radius:6px;margin:10px 0;color:#1b5e20;font-size:.95rem}
-  .warning-box{background:#fff8e1;border-left:5px solid #f9a825;padding:14px 18px;border-radius:6px;margin:10px 0;color:#e65100;font-size:.95rem}
+  .warning-box{background:#fff8e1;border-left:5px solid #f9a825;padding:14px 18px;border-radius:6px;margin:10px 0;color:#5d4037;font-size:.95rem}
   .section-header{border-bottom:3px solid #2e7d32;padding-bottom:6px;color:#1b5e20;font-weight:700;font-size:1.3rem;margin-top:24px}
   .agent-response{background:#fff;border-radius:15px;padding:25px;border:1px solid #e0e0e0;font-size:.95rem;line-height:1.7;box-shadow:0 4px 15px rgba(0,0,0,.05);color:#333}
   .chat-bubble-user{background:#e8f5e9;color:#1b5e20;padding:12px 18px;border-radius:15px 15px 0 15px;margin-bottom:15px;border:1px solid #c8e6c9;width:fit-content;margin-left:auto;font-weight:500}
   @keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
   .stTabs [data-baseweb="tab-panel"]{animation:fadeIn .4s ease-out}
+  /* Better legend & axis readability */
+  .js-plotly-plot .legendtext{font-size:13px !important;fill:#333 !important}
+  .js-plotly-plot .xtick text,.js-plotly-plot .ytick text{font-size:12px !important;fill:#444 !important}
 </style>
 """, unsafe_allow_html=True)
 
@@ -41,9 +44,9 @@ K_CLUSTERS = 4  # Fixed — optimal silhouette=0.443
 CLUSTERING_FEATURES = ["log_sessions", "bounce_rate", "views_per_session"]
 
 SEGMENT_COLORS = {
-    "Well-Served": "#1b5e20",
-    "Deep-Engagement Niche": "#0288d1",
-    "Moderately Served": "#f57c00",
+    "Well-Served": "#2e7d32",
+    "Deep-Engagement Niche": "#1565c0",
+    "Moderately Served": "#ef6c00",
     "Underserved / High-Friction": "#c62828",
 }
 USDA_COLORS = list(SEGMENT_COLORS.values())
@@ -76,7 +79,7 @@ def detect_totals_columns(df):
     return col_map
 
 
-def prepare_page_data(df, country_filter=None):
+def prepare_page_data(df):
     totals = detect_totals_columns(df)
     rename = {v: k.lower().replace(" ","_") for k,v in totals.items()}
     id_cols = [c for c in ["Page title","Page path and screen class","Month","Day","Country"] if c in df.columns]
@@ -87,11 +90,6 @@ def prepare_page_data(df, country_filter=None):
     work = work[~work[pc].astype(str).str.startswith("#")]
     work = work[work[pc].astype(str).str.strip()!=""]
     work = work[work[pc].astype(str).str.strip().str.lower()!="nan"]
-
-    # Country filter
-    if country_filter and "Country" in work.columns:
-        fl = [c.lower().strip() for c in country_filter]
-        work = work[work["Country"].astype(str).str.lower().str.strip().isin(fl)]
     if work.empty: return pd.DataFrame()
 
     num = ["active_users","event_count","sessions","views_per_session",
@@ -286,19 +284,6 @@ def kpi_card(label, value, icon="📊"):
     </div>""", unsafe_allow_html=True)
 
 
-# ── COUNTRY LIST ──
-@st.cache_data
-def get_country_list(filepath):
-    try:
-        df = load_usda_csv(filepath=filepath)
-        if "Country" in df.columns:
-            c = df["Country"].dropna().astype(str).str.strip()
-            c = c[(c!="")&(c.str.lower()!="nan")]
-            return sorted(c.unique().tolist())
-    except: pass
-    return ["United States"]
-
-
 # ── SIDEBAR ──
 with st.sidebar:
     st.image("https://www.usda.gov/themes/custom/uswds_usda/img/favicons/favicon-57.png", width=50)
@@ -316,14 +301,6 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Filters**")
-    countries = get_country_list(DEFAULT_PATH)
-    if len(countries) > 1:
-        country_filter = st.multiselect("Country", options=countries, default=[],
-            help="Leave empty for all countries.")
-    else:
-        country_filter = []
-        st.caption(f"Country: {countries[0]}")
-
     min_sessions = st.number_input("Min Sessions per Page", min_value=0, value=10, step=10,
                                    help="Exclude pages below this session count.")
 
@@ -336,14 +313,13 @@ with st.sidebar:
 
 # ── DATA PIPELINE ──
 @st.cache_data(show_spinner="Loading and processing USDA data...")
-def get_processed_data(file_bytes, filepath, country_filter_tuple, min_sessions):
+def get_processed_data(file_bytes, filepath, min_sessions):
     if file_bytes is not None: raw = load_usda_csv(io.BytesIO(file_bytes))
     else:
         try: raw = load_usda_csv(filepath=filepath)
         except Exception as e: return None, str(e)
-    cl = list(country_filter_tuple) if country_filter_tuple else None
-    page_df = prepare_page_data(raw, country_filter=cl)
-    if page_df.empty: return None, "No data matches filters. Adjust Country or Min Sessions."
+    page_df = prepare_page_data(raw)
+    if page_df.empty: return None, "No data after processing. Check CSV format."
     if "sessions" in page_df.columns: page_df = page_df[page_df["sessions"]>=min_sessions]
     if page_df.empty: return None, "No pages meet session threshold."
     page_df = engineer_features(page_df)
@@ -356,7 +332,7 @@ def get_processed_data(file_bytes, filepath, country_filter_tuple, min_sessions)
 
 
 fb = uploaded_file.read() if uploaded_file else None
-data, error = get_processed_data(fb, DEFAULT_PATH, tuple(country_filter) if country_filter else (), min_sessions)
+data, error = get_processed_data(fb, DEFAULT_PATH, min_sessions)
 
 if error: st.error(f"❌ {error}"); st.info("Upload a valid CSV or adjust filters."); st.stop()
 if data is None: st.warning("Upload a CSV to begin."); st.stop()
@@ -418,13 +394,19 @@ with tab1:
         sc = page_df.groupby("segment").agg(pages=("page_id","count"),sessions=("sessions","sum")).reset_index()
         fig = px.pie(sc, names="segment", values="pages", title="Page Distribution by Segment",
                      color="segment", color_discrete_map=seg_color_discrete, hole=.45)
-        fig.update_layout(title_font_size=15, title_font_color="#1b5e20", paper_bgcolor="white", margin=dict(t=50,b=20))
+        fig.update_traces(textfont_size=13, textinfo="percent+label")
+        fig.update_layout(title_font_size=15, title_font_color="#1b5e20", paper_bgcolor="white",
+                          margin=dict(t=50,b=20), legend=dict(font=dict(size=12,color="#333")),
+                          showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
     with cr:
         fig = px.bar(sc, x="segment", y="sessions", title="Total Sessions by Segment", color="segment",
                      color_discrete_map=seg_color_discrete)
+        fig.update_traces(texttemplate="%{y:,.0f}",textposition="outside",textfont_size=12)
         fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", title_font_size=15,
-                          title_font_color="#1b5e20", showlegend=False, margin=dict(l=40,r=20,t=50,b=40))
+                          title_font_color="#1b5e20", showlegend=False,
+                          xaxis_title="", yaxis_title="Sessions",
+                          margin=dict(l=40,r=20,t=50,b=40))
         st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("<div class='section-header'>Segment Profile Summary</div>", unsafe_allow_html=True)
@@ -471,53 +453,79 @@ with tab1:
 # ═══ TAB 2 — TRAFFIC ANALYTICS ═══
 with tab2:
     st.markdown("<div class='section-header'>Traffic Distribution Analytics</div>", unsafe_allow_html=True)
+
+    # ── Top 20 pages (full width for readability) ──
+    t20 = page_df.nlargest(20,"sessions")[["page_id","sessions","segment"]].copy()
+    t20["page_short"] = t20["page_id"].astype(str).str[:60]
+    fig = px.bar(t20, x="sessions", y="page_short", orientation="h", color="segment",
+                 title="Top 20 Pages by Sessions", color_discrete_map=seg_color_discrete)
+    fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", title_font_size=16,
+                      title_font_color="#1b5e20", yaxis={"categoryorder":"total ascending"},
+                      height=520, margin=dict(l=10,r=20,t=50,b=40),
+                      legend=dict(font=dict(size=13,color="#333"),orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1),
+                      xaxis_title="Sessions",yaxis_title="")
+    fig.update_traces(texttemplate="%{x:,.0f}",textposition="outside",textfont_size=11)
+    st.plotly_chart(fig, use_container_width=True)
+
     ca,cb = st.columns(2)
     with ca:
-        t20 = page_df.nlargest(20,"sessions")[["page_id","sessions","segment"]].copy()
-        t20["page_short"] = t20["page_id"].astype(str).str[:55]
-        fig = px.bar(t20, x="sessions", y="page_short", orientation="h", color="segment",
-                     title="Top 20 Pages by Sessions", color_discrete_map=seg_color_discrete)
+        # ── Bounce Rate by Segment (simple bar) ──
+        seg_bounce = page_df.groupby("segment").agg(
+            avg_bounce=("bounce_rate","mean"),
+            pages=("page_id","count")).reset_index().sort_values("avg_bounce",ascending=False)
+        fig = px.bar(seg_bounce, x="segment", y="avg_bounce", color="segment",
+                     title="Average Bounce Rate by Segment",
+                     color_discrete_map=seg_color_discrete, text_auto=".1%")
         fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", title_font_size=14,
-                          title_font_color="#1b5e20", yaxis={"categoryorder":"total ascending"},
-                          height=500, margin=dict(l=10,r=20,t=50,b=40))
+                          title_font_color="#1b5e20", showlegend=False,
+                          yaxis_title="Bounce Rate", xaxis_title="",
+                          yaxis_tickformat=".0%", height=400,
+                          margin=dict(l=20,r=20,t=50,b=40))
+        fig.update_traces(textposition="outside",textfont_size=13)
         st.plotly_chart(fig, use_container_width=True)
+
     with cb:
-        fig = px.histogram(page_df, x="sessions", nbins=50, title="Session Distribution (Log Scale)",
-                           color_discrete_sequence=["#2e7d32"])
+        # ── Sessions by Segment (simple bar) ──
+        seg_sess = page_df.groupby("segment").agg(total_sess=("sessions","sum")).reset_index().sort_values("total_sess",ascending=False)
+        fig = px.bar(seg_sess, x="segment", y="total_sess", color="segment",
+                     title="Total Sessions by Segment",
+                     color_discrete_map=seg_color_discrete)
         fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", title_font_size=14,
-                          title_font_color="#1b5e20", xaxis_type="log", margin=dict(l=20,r=20,t=50,b=40))
+                          title_font_color="#1b5e20", showlegend=False,
+                          yaxis_title="Sessions", xaxis_title="", height=400,
+                          margin=dict(l=20,r=20,t=50,b=40))
+        fig.update_traces(texttemplate="%{y:,.0f}",textposition="outside",textfont_size=12)
         st.plotly_chart(fig, use_container_width=True)
 
-        samp = page_df.sample(min(2000,len(page_df)), random_state=42)
-        fig = px.scatter(samp, x="bounce_rate", y="avg_session_duration", color="segment",
-                         size=np.log1p(samp["sessions"])+1, title="Bounce vs Duration",
-                         color_discrete_map=seg_color_discrete,
-                         hover_data={"page_id":True,"sessions":True})
-        fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", title_font_size=14,
-                          title_font_color="#1b5e20", margin=dict(l=20,r=20,t=50,b=40))
-        st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("<div class='section-header'>Engagement–Friction Quadrant</div>", unsafe_allow_html=True)
-    qs = page_df.sample(min(3000,len(page_df)), random_state=1)
-    fig = px.scatter(qs, x="friction_index", y="engagement_score", color="segment",
-                     size=np.log1p(qs["sessions"])*2+2, title="Engagement vs Friction",
+    # ── Bounce vs Duration scatter ──
+    st.markdown("<div class='section-header'>Bounce Rate vs Session Duration</div>", unsafe_allow_html=True)
+    samp = page_df.sample(min(2000,len(page_df)), random_state=42)
+    fig = px.scatter(samp, x="bounce_rate", y="avg_session_duration", color="segment",
+                     size=np.clip(np.log1p(samp["sessions"]),1,None),
+                     title="Each dot is a page — size = traffic volume",
                      color_discrete_map=seg_color_discrete,
-                     hover_data={"page_id":True,"sessions":True,"bounce_rate":":.2%"})
-    fig.add_hline(y=page_df["engagement_score"].median(), line_dash="dot", line_color="gray", annotation_text="Median Engagement")
-    fig.add_vline(x=page_df["friction_index"].median(), line_dash="dot", line_color="gray", annotation_text="Median Friction")
-    fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", title_font_size=15,
-                      title_font_color="#1b5e20", height=500, margin=dict(l=20,r=20,t=60,b=40))
+                     hover_data={"page_id":True,"sessions":True},
+                     labels={"bounce_rate":"Bounce Rate","avg_session_duration":"Avg Session Duration (s)"})
+    fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", title_font_size=14,
+                      title_font_color="#1b5e20", height=480,
+                      legend=dict(font=dict(size=13,color="#333")),
+                      xaxis_tickformat=".0%",
+                      margin=dict(l=20,r=20,t=50,b=40))
     st.plotly_chart(fig, use_container_width=True)
-    st.caption("Bubble size ∝ log(sessions). Ideal: lower-right quadrant.")
 
+    # ── Metric box plots ──
     st.markdown("<div class='section-header'>Metric Distributions by Segment</div>", unsafe_allow_html=True)
     mc = st.selectbox("Select metric", ["bounce_rate","avg_session_duration","views_per_session",
                                          "exit_ratio","events_per_session","returning_user_ratio"])
     if mc in page_df.columns:
+        fmt = ".0%" if "rate" in mc or "ratio" in mc else None
         fig = px.box(page_df, x="segment", y=mc, color="segment",
                      title=f"{mc.replace('_',' ').title()} by Segment", color_discrete_map=seg_color_discrete, points="outliers")
         fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", title_font_size=15,
-                          title_font_color="#1b5e20", showlegend=False, margin=dict(l=20,r=20,t=60,b=40))
+                          title_font_color="#1b5e20", showlegend=False, height=420,
+                          xaxis_title="", yaxis_title=mc.replace("_"," ").title(),
+                          margin=dict(l=20,r=20,t=60,b=40))
+        if fmt: fig.update_layout(yaxis_tickformat=fmt)
         st.plotly_chart(fig, use_container_width=True)
 
 
@@ -530,12 +538,13 @@ with tab3:
     # PCA
     st.markdown("<div class='section-header'>PCA Cluster Visualization</div>", unsafe_allow_html=True)
     ps = page_df.sample(min(4000,len(page_df)), random_state=7)
-    fig = px.scatter(ps, x="pca_x", y="pca_y", color="segment", title="PCA Projection",
-                     color_discrete_map=seg_color_discrete, size=np.log1p(ps["sessions"])+1,
+    fig = px.scatter(ps, x="pca_x", y="pca_y", color="segment", title="PCA Projection — Page Clusters",
+                     color_discrete_map=seg_color_discrete, size=np.clip(np.log1p(ps["sessions"]),1,None),
                      hover_data={"page_id":True,"sessions":True,"bounce_rate":":.2%","views_per_session":":.2f"},
                      labels={"pca_x":"PC1","pca_y":"PC2"})
     fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", title_font_size=15,
-                      title_font_color="#1b5e20", height=520, margin=dict(l=20,r=20,t=60,b=40))
+                      title_font_color="#1b5e20", height=520, margin=dict(l=20,r=20,t=60,b=40),
+                      legend=dict(font=dict(size=13,color="#333")))
     st.plotly_chart(fig, use_container_width=True)
     if data["explained_var"] is not None:
         ev=data["explained_var"]
@@ -545,6 +554,8 @@ with tab3:
     st.markdown("<div class='section-header'>Cluster Centroid Profiles</div>", unsafe_allow_html=True)
     rcols=["bounce_rate","avg_session_duration","views_per_session","exit_ratio","returning_user_ratio"]
     ra=[c for c in rcols if c in page_df.columns]
+    nice_names={"bounce_rate":"Bounce Rate","avg_session_duration":"Avg Duration",
+                "views_per_session":"Views/Session","exit_ratio":"Exit Ratio","returning_user_ratio":"Returning Users"}
     if ra:
         cen=page_df.groupby("segment")[ra].mean().reset_index()
         for c in ra:
@@ -556,11 +567,13 @@ with tab3:
             sn=row["segment"]; clr=seg_color_discrete.get(sn,"#888")
             fig.add_trace(go.Scatterpolar(
                 r=[row[c] for c in nc]+[row[nc[0]]],
-                theta=[c.replace("_n","").replace("_"," ").title() for c in nc]+[nc[0].replace("_n","").replace("_"," ").title()],
+                theta=[nice_names.get(c.replace("_n",""),c.replace("_n","").replace("_"," ").title()) for c in nc]+[nice_names.get(nc[0].replace("_n",""),nc[0].replace("_n",""))],
                 fill="toself",name=sn,line_color=clr,fillcolor=clr,opacity=.25))
-        fig.update_layout(polar=dict(radialaxis=dict(visible=True,range=[0,1])),
+        fig.update_layout(polar=dict(radialaxis=dict(visible=True,range=[0,1]),
+                                     angularaxis=dict(tickfont=dict(size=13,color="#333"))),
                           title="Segment Profiles (Normalized)", paper_bgcolor="white",
-                          title_font_size=14, title_font_color="#1b5e20", height=450)
+                          title_font_size=14, title_font_color="#1b5e20", height=480,
+                          legend=dict(font=dict(size=13,color="#333")))
         st.plotly_chart(fig, use_container_width=True)
 
     # ── DOWNLOAD ALL CLUSTERS ──
@@ -646,19 +659,32 @@ with tab4:
     st.markdown("<div class='section-header'>Friction by Segment</div>", unsafe_allow_html=True)
     f1,f2 = st.columns(2)
     with f1:
-        sf = page_df.groupby("segment").agg(avg_f=("friction_index","mean")).reset_index().sort_values("avg_f",ascending=False)
-        fig = px.bar(sf, x="segment", y="avg_f", title="Avg Friction by Segment", color="segment",
-                     color_discrete_map=seg_color_discrete)
+        sf = page_df.groupby("segment").agg(avg_f=("friction_index","mean")).reset_index().sort_values("avg_f",ascending=True)
+        fig = px.bar(sf, x="segment", y="avg_f", title="Avg Friction Index by Segment", color="segment",
+                     color_discrete_map=seg_color_discrete, text_auto=".3f")
+        fig.update_traces(textposition="outside",textfont_size=12)
         fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", title_font_size=14,
-                          title_font_color="#1b5e20", showlegend=False)
+                          title_font_color="#1b5e20", showlegend=False,
+                          xaxis_title="", yaxis_title="Friction Index", height=400,
+                          margin=dict(l=20,r=20,t=50,b=40))
         st.plotly_chart(fig, use_container_width=True)
     with f2:
-        qs2 = page_df.sample(min(3000,len(page_df)), random_state=5)
-        fig = px.scatter(qs2, x="bounce_rate", y="exit_ratio", color="priority_score",
-            color_continuous_scale=[[0,"#e8f5e9"],[.5,"#f9a825"],[1,"#c62828"]],
-            title="Bounce vs Exit (by Priority)", hover_data={"page_id":True,"sessions":True})
-        fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", title_font_size=14,
-                          title_font_color="#1b5e20", coloraxis_colorbar_title="Priority")
+        seg_eng = page_df.groupby("segment").agg(
+            avg_eng=("engagement_score","mean"),
+            avg_fri=("friction_index","mean")).reset_index()
+        fig = go.Figure()
+        fig.add_trace(go.Bar(name="Engagement", x=seg_eng["segment"], y=seg_eng["avg_eng"],
+                             marker_color="#2e7d32", text=seg_eng["avg_eng"].apply(lambda x:f"{x:.3f}"),
+                             textposition="outside"))
+        fig.add_trace(go.Bar(name="Friction", x=seg_eng["segment"], y=seg_eng["avg_fri"],
+                             marker_color="#c62828", text=seg_eng["avg_fri"].apply(lambda x:f"{x:.3f}"),
+                             textposition="outside"))
+        fig.update_layout(barmode="group", title="Engagement vs Friction by Segment",
+                          plot_bgcolor="white", paper_bgcolor="white", title_font_size=14,
+                          title_font_color="#1b5e20", height=400,
+                          legend=dict(font=dict(size=13,color="#333")),
+                          xaxis_title="", yaxis_title="Score",
+                          margin=dict(l=20,r=20,t=50,b=40))
         st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("---")
@@ -813,10 +839,10 @@ with tab6:
         cdf["Segment"]=cdf["Cluster"].map(label_map)
         cdf["~Sessions"]=np.expm1(cdf["log_sessions"]).astype(int)
         dc=cdf[["Segment","log_sessions","~Sessions","bounce_rate","views_per_session"]].copy()
-        dc.columns=["Segment","log(sess)","~Sessions","Bounce","Views/Sess"]
+        dc.columns=["Segment","log_sess","~Sessions","Bounce","Views/Sess"]
         dc["Bounce"]=dc["Bounce"].apply(lambda x:f"{x:.3f}")
         dc["Views/Sess"]=dc["Views/Sess"].apply(lambda x:f"{x:.3f}")
-        dc["log(sess)"]=dc["log(sess)"].apply(lambda x:f"{x:.2f}")
+        dc["log_sess"]=dc["log_sess"].apply(lambda x:f"{x:.2f}")
         dc["~Sessions"]=dc["~Sessions"].apply(lambda x:f"{x:,}")
         st.dataframe(dc, use_container_width=True, hide_index=True)
 
@@ -829,13 +855,13 @@ with tab6:
 **3. Aggregation** — Pages grouped by path. Sums for counts, means for rates. Derived ratios post-aggregation.
 
 **4. Feature Engineering** — Engagement Score & Friction Index (MinMax-normalized weighted composites).
-Priority Score = Friction × log(1+sessions).
+Priority Score = Friction x log(1+sessions).
 
 **5. Feature Selection** — 30 configurations tested. Best: log(sessions) + bounce + views/session at K=4 (Sil=0.443).
 
 **6. Clustering** — K-Means, n_init=30, max_iter=500, pure NumPy. PCA(2) for visualization.
 
-**7. Labeling** — Highest bounce → Underserved; highest views/sess → Deep-Engagement; highest traffic → Well-Served; rest → Moderate.
+**7. Labeling** — Highest bounce = Underserved; highest views/sess = Deep-Engagement; highest traffic = Well-Served; rest = Moderate.
 """)
 
     st.markdown("<div class='section-header'>Data Preview</div>", unsafe_allow_html=True)
@@ -843,9 +869,9 @@ Priority Score = Friction × log(1+sessions).
         "views_per_session","exit_ratio","engagement_score","friction_index","priority_score","segment"] if c in page_df.columns]
     st.dataframe(page_df[pc].sort_values("sessions",ascending=False).head(100), use_container_width=True, hide_index=True)
 
-    st.download_button("⬇️ Download Full Dataset", page_df.to_csv(index=False).encode(),
+    st.download_button("Download Full Dataset", page_df.to_csv(index=False).encode(),
                        file_name="usda_pages_full.csv", mime="text/csv")
 
     st.markdown("""---
 <div style='font-size:.8rem;color:#888;text-align:center;padding:10px'>
-USDA Digital Experience Intelligence Platform v3.1 | K-Means (K=4, Optimized) | GA4 Data Source</div>""", unsafe_allow_html=True)
+USDA Digital Experience Intelligence Platform v3.2 | K-Means (K=4, Optimized) | GA4 Data Source</div>""", unsafe_allow_html=True)
